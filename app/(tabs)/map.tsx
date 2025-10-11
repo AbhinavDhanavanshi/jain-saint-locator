@@ -1,118 +1,293 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
-import { Feather } from '@expo/vector-icons';
-import { Link } from 'expo-router'; // Import the Link component
-import Colors from '../../constants/Colors';
-import { db } from '../../firebaseConfig';
-import { collection, getDocs, GeoPoint } from 'firebase/firestore';
+import React, { useState, useEffect, useRef } from "react";
+import {
+  StyleSheet,
+  Text,
+  View,
+  ScrollView,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Platform,
+  TextInput,
+} from "react-native";
+import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
+import {
+  Feather,
+  MaterialCommunityIcons,
+  FontAwesome,
+} from "@expo/vector-icons";
+import * as Location from "expo-location";
+import { Link } from "expo-router";
+import Colors from "../../constants/Colors";
+import { db } from "../../firebaseConfig";
+import { collection, getDocs, GeoPoint } from "firebase/firestore";
 
-// Define a type for our Saint data that includes the GeoPoint and lastSeen
+// Define a type for our Saint data
 export type SaintOnMap = {
   id: string;
   name: string;
   location: string;
-  lastSeen?: string; // Added lastSeen to the type
+  lastSeen?: string;
   coordinates: GeoPoint;
+  distance?: number;
+
 };
 
-const SaintMapCard = ({ saint }: { saint: SaintOnMap }) => (
-    <View style={styles.saintCard}>
-        <View style={styles.saintIcon}>
-            <Feather name="clock" size={20} color={Colors.light.maroon} />
-        </View>
+
+// Haversine formula to calculate distance between two lat/lng points
+const getDistance = (
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+) => {
+  const R = 6371; // Radius of the earth in km
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c; // Distance in km
+};
+
+// Function to open Google Maps for directions
+const openDirections = (latitude: number, longitude: number, label: string) => {
+  const scheme = Platform.OS === "ios" ? "maps:0,0?q=" : "geo:0,0?q=";
+  const url = `${scheme}${latitude},${longitude}(${label})`;
+  Linking.openURL(url);
+};
+
+const SaintMapCard = ({ saint, onPress, isSelected }: { saint: SaintOnMap, onPress: () => void, isSelected: boolean }) => (
+    <TouchableOpacity onPress={onPress} style={[styles.saintCard, isSelected && styles.selectedCard]}>
         <View style={styles.saintInfo}>
             <Text style={styles.saintName}>{saint.name}</Text>
             <Text style={styles.saintLocation}>{saint.location}</Text>
-            {saint.lastSeen && <Text style={styles.saintLastSeen}>Last known • {saint.lastSeen}</Text>}
+            {saint.distance != null && <Text style={styles.saintDistance}>{saint.distance.toFixed(1)} km away</Text>}
         </View>
-        {/* Wrap the button with a Link component to handle navigation */}
-        <Link href={`/saint/${saint.id}`} asChild>
-            <TouchableOpacity style={styles.detailsButton}>
-                <Text style={styles.detailsButtonText}>View Details</Text>
-            </TouchableOpacity>
-        </Link>
-    </View>
+        <TouchableOpacity 
+            style={styles.detailsButton}
+            onPress={() => openDirections(saint.coordinates.latitude, saint.coordinates.longitude, saint.name)}
+        >
+            <Text style={styles.detailsButtonText}>Directions</Text>
+        </TouchableOpacity>
+    </TouchableOpacity>
 );
 
 
 export default function MapScreen() {
-  const [saints, setSaints] = useState<SaintOnMap[]>([]);
+  const [allSaints, setAllSaints] = useState<SaintOnMap[]>([]);
+  const [filteredSaints, setFilteredSaints] = useState<SaintOnMap[]>([]);
+  const [selectedSaintId, setSelectedSaintId] = useState<string | null>(null);
+  const [userLocation, setUserLocation] =
+    useState<Location.LocationObject | null>(null);
   const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [distanceFilter, setDistanceFilter] = useState<number>(Infinity);
+  const mapRef = useRef<MapView>(null);
 
+  const distanceOptions = [
+    { label: "10 km", value: 10 },
+    { label: "50 km", value: 50 },
+    { label: "100 km", value: 100 },
+    { label: "All", value: Infinity },
+  ];
+
+  // Effect to fetch user location and saints data
   useEffect(() => {
-    const fetchSaintsForMap = async () => {
-      try {
-        const saintsCollectionRef = collection(db, 'saint');
-        const querySnapshot = await getDocs(saintsCollectionRef);
-        
-        const rawData = querySnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
-        
-        const saintsData = rawData
-          .map(data => data as SaintOnMap)
-          .filter(saint => {
-            // This filter ensures we only try to display saints with valid coordinates
-            return saint.coordinates && typeof saint.coordinates.latitude === 'number' && typeof saint.coordinates.longitude === 'number';
-          });
-        
-        if (rawData.length > 0 && saintsData.length === 0) {
-            Alert.alert(
-                "Data Issue",
-                "Saints were fetched, but none have a valid 'coordinates' field. Please go to your Firebase Console and ensure each saint document has a 'coordinates' field of type 'geopoint' with a latitude and longitude."
-            );
-        }
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        setErrorMsg("Permission to access location was denied");
+        setLoading(false);
+        return;
+      }
 
-        setSaints(saintsData);
+      let location = await Location.getCurrentPositionAsync({});
+      setUserLocation(location);
+
+      try {
+        const saintsCollectionRef = collection(db, "saint");
+        const querySnapshot = await getDocs(saintsCollectionRef);
+        const saintsData = querySnapshot.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() } as SaintOnMap))
+          .filter(
+            (saint) =>
+              saint.coordinates &&
+              typeof saint.coordinates.latitude === "number"
+          )
+          .map((saint) => {
+            const distance = getDistance(
+              location.coords.latitude,
+              location.coords.longitude,
+              saint.coordinates.latitude,
+              saint.coordinates.longitude
+            );
+            return { ...saint, distance };
+          })
+          .sort((a, b) => (a.distance ?? 0) - (b.distance ?? 0));
+
+        setAllSaints(saintsData);
       } catch (error) {
-        console.error("Error fetching saints for map:", error);
-        Alert.alert("Error", "Could not fetch data from Firebase. Please check the console for more details.");
+        console.error("Error fetching saints:", error);
+        setErrorMsg("Failed to fetch saints data.");
       } finally {
         setLoading(false);
       }
-    };
-
-    fetchSaintsForMap();
+    })();
   }, []);
+
+  // Effect to apply search and distance filters
+  useEffect(() => {
+    let processedSaints = allSaints;
+
+    // 1. Apply distance filter
+    if (distanceFilter !== Infinity) {
+      processedSaints = processedSaints.filter(
+        (saint) => (saint.distance ?? Infinity) <= distanceFilter
+      );
+    }
+
+    // 2. Apply search filter
+    if (searchQuery.trim() !== "") {
+      const lowercasedQuery = searchQuery.toLowerCase();
+      processedSaints = processedSaints.filter((saint) =>
+        saint.name.toLowerCase().includes(lowercasedQuery)
+      );
+    }
+
+    setFilteredSaints(processedSaints);
+  }, [searchQuery, distanceFilter, allSaints]);
+
+  // Function to handle tapping on a saint card
+  const handleSaintCardPress = (saint: SaintOnMap) => {
+    setSelectedSaintId(saint.id);
+    if (mapRef.current) {
+      mapRef.current.animateToRegion(
+        {
+          latitude: saint.coordinates.latitude,
+          longitude: saint.coordinates.longitude,
+          latitudeDelta: 0.1, // Zoom in closer
+          longitudeDelta: 0.1,
+        },
+        1000
+      ); // Animate over 1 second
+    }
+  };
+
+  const centerOnUser = () => {
+    if (userLocation && mapRef.current) {
+      mapRef.current.animateToRegion({
+        latitude: userLocation.coords.latitude,
+        longitude: userLocation.coords.longitude,
+        latitudeDelta: 0.5,
+        longitudeDelta: 0.5,
+      });
+    }
+  };
 
   return (
     <View style={styles.container}>
       <MapView
+        ref={mapRef}
+        provider={PROVIDER_GOOGLE}
         style={styles.map}
         initialRegion={{
-          latitude: 24.8, // Centered on India
+          latitude: 24.8,
           longitude: 80,
           latitudeDelta: 20,
           longitudeDelta: 20,
         }}
+        showsUserLocation={true}
       >
-        {saints.map(saint => (
+        {filteredSaints.map((saint) => (
           <Marker
             key={saint.id}
             coordinate={{
-                latitude: saint.coordinates.latitude,
-                longitude: saint.coordinates.longitude
+              latitude: saint.coordinates.latitude,
+              longitude: saint.coordinates.longitude,
             }}
             title={saint.name}
-            pinColor={Colors.light.maroon}
+            description={saint.location}
+            // Highlight the selected marker
+            pinColor={
+              selectedSaintId === saint.id
+                ? Colors.light.saffron
+                : Colors.light.maroon
+            }
           />
         ))}
       </MapView>
 
+      <TouchableOpacity style={styles.myLocationButton} onPress={centerOnUser}>
+        <MaterialCommunityIcons
+          name="crosshairs-gps"
+          size={24}
+          color={Colors.light.darkGray}
+        />
+      </TouchableOpacity>
+
+      <View style={styles.searchContainer}>
+        <FontAwesome
+          name="search"
+          size={20}
+          color={Colors.light.mediumGray}
+          style={styles.searchIcon}
+        />
+        <TextInput
+          placeholder="Search saint by name..."
+          placeholderTextColor={Colors.light.mediumGray}
+          style={styles.searchInput}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+        />
+      </View>
+
       <View style={styles.listContainer}>
-        <Text style={styles.listHeader}>Saints on Map</Text>
+        <Text style={styles.listHeader}>Saints Nearby</Text>
+
+        <View style={styles.filterContainer}>
+          {distanceOptions.map((option) => (
+            <TouchableOpacity
+              key={option.label}
+              style={[
+                styles.filterButton,
+                distanceFilter === option.value && styles.filterActive,
+              ]}
+              onPress={() => setDistanceFilter(option.value)}
+            >
+              <Text
+                style={[
+                  styles.filterText,
+                  distanceFilter === option.value && styles.filterActiveText,
+                ]}
+              >
+                {option.label}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         {loading ? (
-            <ActivityIndicator size="large" color={Colors.light.saffron} />
+          <ActivityIndicator size="large" color={Colors.light.saffron} />
+        ) : errorMsg ? (
+          <Text style={styles.errorText}>{errorMsg}</Text>
         ) : (
-            <ScrollView>
-                {saints.length > 0 ? (
-                    saints.map(saint => <SaintMapCard key={saint.id} saint={saint} />)
-                ) : (
-                    <Text style={styles.noDataText}>No saints with location data found.</Text>
-                )}
-            </ScrollView>
+          <ScrollView>
+            {filteredSaints.map((saint) => (
+              <SaintMapCard
+                key={saint.id}
+                saint={saint}
+                onPress={() => handleSaintCardPress(saint)}
+                isSelected={selectedSaintId === saint.id}
+              />
+            ))}
+          </ScrollView>
         )}
       </View>
     </View>
@@ -120,79 +295,105 @@ export default function MapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F7F7F7',
+  // --- Most styles remain the same ---
+  container: { flex: 1, backgroundColor: "#F7F7F7" },
+  map: { flex: 1 },
+  myLocationButton: {
+    position: "absolute",
+    top: 60,
+    right: 20,
+    backgroundColor: "white",
+    padding: 12,
+    borderRadius: 30,
+    elevation: 5,
   },
-  map: {
-    height: '55%',
+  searchContainer: {
+    position: "absolute",
+    top: 120,
+    left: 20,
+    right: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "white",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    elevation: 5,
   },
+  searchIcon: { marginRight: 12 },
+  searchInput: { flex: 1, height: 50, fontSize: 16 },
   listContainer: {
-    flex: 1,
+    height: "45%",
     backgroundColor: Colors.light.white,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    marginTop: -20, // Pulls the list up over the map slightly
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    elevation: 10,
   },
   listHeader: {
     fontSize: 18,
-    fontWeight: 'bold',
+    fontWeight: "bold",
     marginBottom: 16,
     color: Colors.light.darkGray,
+  },
+  filterContainer: {
+    flexDirection: "row",
+    marginBottom: 16,
+  },
+  filterButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginRight: 10,
+    backgroundColor: "#eee",
+  },
+  filterActive: {
+    backgroundColor: Colors.light.saffron,
+  },
+  filterText: {
+    fontWeight: "600",
+    color: Colors.light.mediumGray,
+  },
+  filterActiveText: {
+    color: "white",
   },
   saintCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     marginBottom: 16,
     padding: 12,
-    backgroundColor: '#FAFAFA', // Slightly different background for cards
+    backgroundColor: "#FAFAFA",
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#eee'
+    borderWidth: 2,
+    borderColor: "transparent", // Default no border
   },
-  saintIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFEAE5',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 16,
+  selectedCard: {
+    borderColor: Colors.light.saffron, // Highlight border for selected card
   },
-  saintInfo: {
-    flex: 1,
-  },
-  saintName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: Colors.light.darkGray,
-  },
+  saintInfo: { flex: 1 },
+  saintName: { fontSize: 16, fontWeight: "600", color: Colors.light.darkGray },
   saintLocation: {
     fontSize: 14,
     color: Colors.light.mediumGray,
     marginVertical: 2,
   },
-  saintLastSeen: {
-      fontSize: 12,
-      color: Colors.light.mediumGray,
+  saintDistance: {
+    fontSize: 12,
+    color: Colors.light.saffron,
+    fontWeight: "bold",
   },
   detailsButton: {
     paddingVertical: 8,
     paddingHorizontal: 12,
-    borderWidth: 1,
-    borderColor: Colors.light.saffron,
+    backgroundColor: Colors.light.saffron,
     borderRadius: 20,
   },
-  detailsButtonText: {
-    color: Colors.light.saffron,
-    fontWeight: '600',
+  detailsButtonText: { color: Colors.light.white, fontWeight: "600" },
+  errorText: { textAlign: "center", marginTop: 20, fontSize: 16, color: "red" },
+  noResultsText: {
+    textAlign: "center",
+    marginTop: 20,
+    fontSize: 16,
+    color: Colors.light.mediumGray,
   },
-  noDataText: {
-      textAlign: 'center',
-      marginTop: 20,
-      fontSize: 16,
-      color: Colors.light.mediumGray,
-  }
 });
-
