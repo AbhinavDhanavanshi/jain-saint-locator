@@ -11,6 +11,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
     "expo": "~54.0.10",
+    "expo-calendar": "~15.0.7",
     "expo-constants": "~18.0.9",
     "expo-linking": "~8.0.8",
     "expo-location": "~19.0.7",
