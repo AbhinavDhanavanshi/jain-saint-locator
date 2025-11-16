@@ -7,19 +7,7 @@ import { Link } from 'expo-router';
 import Colors from '../../constants/Colors';
 import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebaseConfig';
-
-// Updated Saint type
-export type Saint = {
-  id: string;
-  name: string;
-  designation: string;
-  location: string;
-  guruName: string;
-  sect: string;
-  about?: string;
-  amber: string;
-  groupLeader: string;
-};
+import { Saint } from '../types'; // Import the Saint type
 
 // ActionButton component is now updated to handle navigation
 const ActionButton = ({ icon, label, href }: { icon: React.ReactNode; label: string; href?: string; }) => {
