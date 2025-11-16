@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'; // Added useEffect
+import React, { useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -14,93 +14,14 @@ import {
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import Colors from '../../constants/Colors';
-import AsyncStorage from '@react-native-async-storage/async-storage'; // --- 1. ADD ASYNCSTORAGE ---
 
-// Import Firebase
+// --- 1. SIMPLIFIED FIREBASE IMPORTS ---
+// We only need the database (db) from your config
 import { db } from '../../firebaseConfig'; 
-// We need 'addDoc' for volunteers and 'setDoc' for users
-import { addDoc, collection, doc, setDoc } from 'firebase/firestore';
+// We only need 'addDoc' (to create a new document) and 'collection'
+import { addDoc, collection } from 'firebase/firestore';
 
-// --- 2. NEW "USER LOGIN" MODAL ---
-const UserLoginModal = ({
-  visible,
-  onClose,
-  onSubmit,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  onSubmit: (data: { name: string; phone: string }) => void;
-}) => {
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-
-  const handleSubmit = () => {
-    // Name and Phone are mandatory
-    if (!name || !phone) {
-      Alert.alert('Missing Fields', 'Please fill out your name and phone number.');
-      return;
-    }
-    onSubmit({ name, phone });
-    setName('');
-    setPhone('');
-  };
-
-  return (
-    <Modal
-      animationType="slide"
-      transparent={true}
-      visible={visible}
-      onRequestClose={onClose}
-    >
-      <Pressable style={styles.modalBackdrop} onPress={onClose}>
-        <View style={styles.modalContainer} onStartShouldSetResponder={() => true}>
-          <Text style={styles.modalTitle}>Your Profile</Text>
-          <Text style={styles.modalSubtitle}>
-            Save your details to enhance your app experience.
-          </Text>
-
-          <TextInput
-            placeholder="Your Name *"
-            value={name}
-            onChangeText={setName}
-            style={styles.input}
-            placeholderTextColor={Colors.light.mediumGray}
-          />
-          <TextInput
-            placeholder="Phone No *"
-            value={phone}
-            onChangeText={setPhone}
-            style={styles.input}
-            keyboardType="phone-pad"
-            placeholderTextColor={Colors.light.mediumGray}
-          />
-
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={[styles.button, styles.cancelButton]}
-              onClose={onClose}
-            >
-              <Text style={[styles.buttonText, styles.cancelButtonText]}>
-                Cancel
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, styles.submitButton]}
-              onPress={handleSubmit}
-            >
-              <Text style={[styles.buttonText, styles.submitButtonText]}>
-                Save Profile
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Pressable>
-    </Modal>
-  );
-};
-
-
-// --- VOLUNTEER SIGNUP MODAL (Unchanged) ---
+// --- 2. Volunteer Signup Modal (unchanged) ---
 const VolunteerSignupModal = ({
   visible,
   onClose,
@@ -121,7 +42,9 @@ const VolunteerSignupModal = ({
       Alert.alert('Missing Fields', 'Please fill out all required fields.');
       return;
     }
+    
     onSubmit({ name, city, phone, designation, password });
+    
     setName('');
     setCity('');
     setPhone('');
@@ -206,7 +129,7 @@ const VolunteerSignupModal = ({
 };
 
 
-// ProfileSection Component (Unchanged)
+// ProfileSection Component
 const ProfileSection = ({ title, children }: { title: string, children: React.ReactNode }) => (
     <View style={styles.section}>
         <View style={styles.sectionHeader}>
@@ -216,7 +139,7 @@ const ProfileSection = ({ title, children }: { title: string, children: React.Re
     </View>
 );
 
-// SettingRow Component (Unchanged)
+// SettingRow Component
 const SettingRow = ({ icon, text, hasSwitch, value, onValueChange, onPress }: { icon: any, text: string, hasSwitch?: boolean, value?: boolean, onValueChange?: () => void, onPress?: () => void }) => (
     <TouchableOpacity style={styles.row} onPress={onPress} disabled={hasSwitch}>
         <Feather name={icon} size={20} color={Colors.light.mediumGray} />
@@ -236,81 +159,36 @@ const SettingRow = ({ icon, text, hasSwitch, value, onValueChange, onPress }: { 
 );
 
 
-// --- 3. MAIN PROFILESREEN COMPONENT (Updated) ---
+// Main ProfileScreen Component
 export default function ProfileScreen() {
   const [locationUpdates, setLocationUpdates] = useState(true);
   const [eventReminders, setEventReminders] = useState(true);
   const [newSaints, setNewSaints] = useState(false);
   
-  // State for the modals
-  const [volunteerModalVisible, setVolunteerModalVisible] = useState(false);
-  const [userModalVisible, setUserModalVisible] = useState(false); // <-- New state for user modal
-
-  // State for the user's name
-  const [userName, setUserName] = useState('Devotee'); // <-- New state for user name
-
-  // --- 4. Load user's name when app starts ---
-  useEffect(() => {
-    const loadUserName = async () => {
-      const storedName = await AsyncStorage.getItem('userName');
-      if (storedName) {
-        setUserName(storedName);
-      }
-    };
-    loadUserName();
-  }, []);
-
-  // --- 5. NEW: Handle User Profile Save ---
-  const handleUserLoginSubmit = async (data: { name: string; phone: string }) => {
-    try {
-      // 1. Save to device memory
-      await AsyncStorage.setItem('userName', data.name);
-      await AsyncStorage.setItem('userPhone', data.phone);
-
-      // 2. Update the welcome text
-      setUserName(data.name);
-
-      // 3. Save to Firebase 'users' collection
-      // We use the phone number as the document ID
-      const userDocRef = doc(db, 'users', data.phone);
-      await setDoc(userDocRef, {
-        displayName: data.name,
-        phonenumber: data.phone,
-        // Add default notification settings like your screenshot
-        notificationSettings: {
-          eventReminders: true,
-          newSaintsNearby: true,
-          saintLocationUpdates: true,
-        },
-        followedSaints: [] // Start with an empty list
-      });
-
-      // Success
-      setUserModalVisible(false);
-      Alert.alert('Profile Saved', `Welcome, ${data.name}!`);
-
-    } catch (error: any) {
-      console.error("Error saving user profile: ", error);
-      Alert.alert('Error', 'Could not save your profile.');
-    }
-  };
-
-
-  // --- Handle Volunteer Signup (Unchanged) ---
+  const [modalVisible, setModalVisible] = useState(false);
+  
+  // --- 3. SIMPLIFIED SUBMIT HANDLER ---
   const handleVolunteerSubmit = async (data: any) => {
     try {
+      // Step 1: Create a reference to the 'volunteers' collection
       const volunteersCollection = collection(db, 'volunteers');
+
+      // Step 2: Add a new document with an auto-generated ID
       await addDoc(volunteersCollection, {
+        // Your requested fields:
         name: data.name,
         location: data.city,
         phonenumber: data.phone,
         designation: data.designation,
-        password: data.password,
-        isApproved: false,
+        password: data.password, // Storing the password
+        
+        // System fields:
+        isApproved: false, // For admin approval
         createdAt: new Date(),
       });
 
-      setVolunteerModalVisible(false);
+      // Success
+      setModalVisible(false);
       Alert.alert(
         'Success',
         'Your volunteer application has been submitted for review.'
@@ -329,12 +207,10 @@ export default function ProfileScreen() {
           <View style={styles.avatar}>
             <Feather name="user" size={30} color={Colors.light.saffron} />
           </View>
-          {/* --- 6. WELCOME TEXT IS NOW DYNAMIC --- */}
-          <Text style={styles.headerTitle}>Welcome, {userName}</Text>
+          <Text style={styles.headerTitle}>Welcome, Devotee</Text>
           <Text style={styles.headerSubtitle}>Your spiritual journey companion</Text>
         </View>
 
-        {/* ... Following Section ... */}
         <ProfileSection title="Following (1)">
           <View style={styles.followedSaintCard}>
             <View style={styles.saintAvatar}>
@@ -348,34 +224,23 @@ export default function ProfileScreen() {
           </View>
         </ProfileSection>
 
-        {/* ... Notification Settings ... */}
         <ProfileSection title="Notification Settings">
           <SettingRow icon="map-pin" text="Saint Location Updates" hasSwitch value={locationUpdates} onValueChange={() => setLocationUpdates(!locationUpdates)} />
           <SettingRow icon="bell" text="Event Reminders" hasSwitch value={eventReminders} onValueChange={() => setEventReminders(!eventReminders)} />
           <SettingRow icon="users" text="New Saints Nearby" hasSwitch value={newSaints} onValueChange={() => setNewSaints(!newSaints)} />
         </ProfileSection>
 
-        {/* --- 7. "SETTINGS" SECTION UPDATED --- */}
         <ProfileSection title="Settings">
-          {/* This button only shows if the user is not logged in */}
-          {userName === 'Devotee' && (
-            <SettingRow
-              icon="log-in"
-              text="Login as User"
-              onPress={() => setUserModalVisible(true)}
-            />
-          )}
           <SettingRow icon="edit-3" text="Edit Profile" onPress={() => {}} />
           <SettingRow icon="shield" text="Privacy Settings" onPress={() => {}} />
           <SettingRow icon="help-circle" text="Help & Support" onPress={() => {}} />
           <SettingRow
             icon="user-plus"
             text="Sign up as Volunteer"
-            onPress={() => setVolunteerModalVisible(true)}
+            onPress={() => setModalVisible(true)}
           />
         </ProfileSection>
 
-        {/* ... About Section ... */}
         <ProfileSection title="About Saint Locator">
           <Text style={styles.aboutText}>
             Saint Locator helps you connect with spiritual teachers...
@@ -383,16 +248,10 @@ export default function ProfileScreen() {
         </ProfileSection>
         <Text style={styles.footerText}>Version 1.0.0</Text>
 
-        {/* --- 8. RENDER BOTH MODALS --- */}
         <VolunteerSignupModal
-          visible={volunteerModalVisible}
-          onClose={() => setVolunteerModalVisible(false)}
+          visible={modalVisible}
+          onClose={() => setModalVisible(false)}
           onSubmit={handleVolunteerSubmit}
-        />
-        <UserLoginModal
-          visible={userModalVisible}
-          onClose={() => setUserModalVisible(false)}
-          onSubmit={handleUserLoginSubmit}
         />
         
       </ScrollView>
